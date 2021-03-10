@@ -6,6 +6,9 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:tflite/tflite.dart';
 import 'package:image/image.dart' as imgLib;
+import 'package:tflite_flutter/tflite_flutter.dart';
+import 'package:tflite_flutter_helper/tflite_flutter_helper.dart';
+import 'package:tflite_flutter/tflite_flutter.dart' as tfl;
 
 void main() {
   runApp(MyApp());
@@ -73,20 +76,57 @@ class _MyHomePageState extends State<MyHomePage> {
   void _selectImage() async {
     final picker = ImagePicker();
     final pickedFile = await picker.getImage(source: ImageSource.gallery);
-    var imageBytes = (File(pickedFile.path).readAsBytesSync().buffer.asByteData()).buffer;
-    imgLib.Image image = imgLib.decodeImage(imageBytes.asUint8List());
-    //var image = imgLib.decodeImage(File(pickedFile.path).readAsBytesSync());
+    //var imageBytes = (File(pickedFile.path).readAsBytesSync().buffer.asByteData()).buffer;
+    //imgLib.Image image = imgLib.decodeImage(imageBytes.asUint8List());
+    var image = imgLib.decodeImage(File(pickedFile.path).readAsBytesSync());
     var thumbnail = imgLib.copyResize(image, width: 32, height: 32);
-    //File(pickedFile.path).writeAsBytesSync(imgLib.encodePng(thumbnail));
-    var recognitions = await Tflite.runModelOnBinary(
-      binary: imageToByteListUint8(thumbnail, 300),
+    File(pickedFile.path).writeAsBytesSync(imgLib.encodePng(thumbnail));
+
+    //useTFLitePackage(File(pickedFile.path));
+    useTFLiteFlutterPackage(thumbnail, File(pickedFile.path));
+    //usePlatformChannel(pickedFile.path);
+
+  }
+
+  void useTFLiteFlutterPackage(imgLib.Image image, File pickedImageFile) async {
+
+    final interpreter = await tfl.Interpreter.fromAsset('liveness.tflite');
+    TensorBuffer outputBuffer = TensorBuffer.createFixedSize(<int>[1, 2], TfLiteType.float32);
+    TensorBuffer inputBuffer = TensorBuffer.createFixedSize(<int>[1, 32, 32, 3], TfLiteType.float32);
+    inputBuffer.loadBuffer(imageToByteListFloat32(image, 32, 127, 255.0));
+
+    TensorProcessor probabilityProcessor =
+    TensorProcessorBuilder().add(DequantizeOp(0, 1 / 255.0)).build();
+    TensorBuffer dequantizedBuffer = probabilityProcessor.process(outputBuffer);
+
+    var _inputImage = TensorImage(TfLiteType.float32);
+    _inputImage.loadImage(image);
+
+    interpreter.run(inputBuffer.buffer, outputBuffer.buffer);
+
+    List<String> labels = await FileUtil.loadLabels("assets/liveness.txt");
+
+    /*TensorLabel tensorLabel = TensorLabel(labels, outputBuffer);
+    );
+
+    Map<String, double> doubleMap = tensorLabel.getMapWithFloatValue();*/
+
+    print("TFLite Helper :: ${outputBuffer.getDoubleList()}");
+
+  }
+
+  void useTFLitePackage(File pickedImageFile) async {
+    var recognitions = await Tflite.runModelOnImage(
+        path: pickedImageFile.path,   // required
+        imageMean: 0.0,   // defaults to 117.0
+        imageStd: 255.0,  // defaults to 1.0
         numResults: 2,    // defaults to 5
         asynch: true      // defaults to true
     );
     print("TFLite Recognition :: ${recognitions.toString()}");
   }
 
-  Uint8List imageToByteListFloat32(
+  ByteBuffer imageToByteListFloat32(
       imgLib.Image image, int inputSize, double mean, double std) {
     var convertedBytes = Float32List(1 * inputSize * inputSize * 3);
     var buffer = Float32List.view(convertedBytes.buffer);
@@ -99,7 +139,7 @@ class _MyHomePageState extends State<MyHomePage> {
         buffer[pixelIndex++] = (imgLib.getBlue(pixel) - mean) / std;
       }
     }
-    return convertedBytes.buffer.asUint8List();
+    return convertedBytes.buffer;
   }
 
   Uint8List imageToByteListUint8(imgLib.Image image, int inputSize) {
@@ -139,5 +179,17 @@ class _MyHomePageState extends State<MyHomePage> {
         child: Icon(Icons.add),
       ), // This trailing comma makes auto-formatting nicer for build methods.
     );
+  }
+
+  void usePlatformChannel(String imagePath) async {
+    const platform = const MethodChannel('samples.flutter.io/tensor');
+
+    try {
+      final String result = await platform.invokeMethod('doTensor', imagePath);
+      print("Results :: " + result);
+    } on PlatformException catch (e) {
+      print("Failed to get result :: '${e.message}'.");
+    }
+
   }
 }
